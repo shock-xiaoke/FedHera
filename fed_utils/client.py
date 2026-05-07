@@ -16,6 +16,28 @@ import time
 import gc
 
 
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+EVALUATE_ROOT = os.environ.get("FEDHERA_EVALUATE_ROOT", os.path.join(REPO_ROOT, "evaluate"))
+
+
+def _load_evaluate_metric(local_relative_path: str, fallback_name: str | None = None):
+    metric_path = os.path.join(EVALUATE_ROOT, "metrics", *local_relative_path.split("/"))
+    if os.path.exists(metric_path):
+        return evaluate.load(metric_path)
+
+    if fallback_name is not None:
+        try:
+            return evaluate.load(fallback_name)
+        except Exception:
+            pass
+
+    raise FileNotFoundError(
+        "Could not locate the evaluation metric code under "
+        f"'{EVALUATE_ROOT}'. Clone huggingface/evaluate into the repository root "
+        "or run 'python utils/setup_evaluate.py'."
+    )
+
+
 class StepLatencyProfilerCallback(transformers.TrainerCallback):
     def __init__(self, warmup_steps=3, use_cuda=False):
         self.warmup_steps = max(int(warmup_steps), 0)
@@ -499,10 +521,10 @@ class GeneralClient:
             dataloader_num_workers=self.dataloader_num_workers,
             dataloader_pin_memory=use_cuda,
         )
-        rouge_metric = evaluate.load("./evaluate/metrics/rouge/rouge.py")
-        bleu_metric = evaluate.load("./evaluate/metrics/bleu")
-        meteor_metric = evaluate.load("./evaluate/metrics/meteor")
-        nist_metric = evaluate.load("./evaluate/metrics/nist_mt")
+        rouge_metric = _load_evaluate_metric("rouge/rouge.py", fallback_name="rouge")
+        bleu_metric = _load_evaluate_metric("bleu", fallback_name="bleu")
+        meteor_metric = _load_evaluate_metric("meteor", fallback_name="meteor")
+        nist_metric = _load_evaluate_metric("nist_mt", fallback_name="nist_mt")
         try:
             from pycocoevalcap.cider.cider import Cider
             cider_scorer = Cider()

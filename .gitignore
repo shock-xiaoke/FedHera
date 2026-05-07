@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+data/
+logs/
+outputs/
+tmp_*/
+trainer_saved/
+wandb/
+.DS_Store

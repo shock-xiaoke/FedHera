@@ -16,6 +16,8 @@ Paper status: published on 30 April 2026 and accepted as an ICML 2026 regular pa
 
 Run all commands from the repository root.
 
+Unless explicitly marked as `PowerShell`, command blocks below use Linux or macOS shell syntax. If your Linux environment maps Python 3 to `python3` and `pip3`, use those names instead of `python` and `pip`.
+
 ### Option 1: pip
 
 ```bash
@@ -40,7 +42,15 @@ Notes:
 
 Recommended setup:
 
+Linux or macOS:
+
 ```bash
+python3 utils/setup_evaluate.py
+```
+
+Windows PowerShell:
+
+```powershell
 python utils/setup_evaluate.py
 ```
 
@@ -48,12 +58,23 @@ This clones `https://github.com/huggingface/evaluate.git` into `./evaluate` and 
 
 Manual setup is also fine:
 
+Linux or macOS:
+
 ```bash
 git clone https://github.com/huggingface/evaluate.git evaluate
 pip install -e evaluate
 ```
 
+Windows PowerShell:
+
+```powershell
+git clone https://github.com/huggingface/evaluate.git evaluate
+pip install -e .\evaluate
+```
+
 If you place the checkout somewhere else, set:
+
+Linux or macOS:
 
 ```bash
 export FEDHERA_EVALUATE_ROOT=/path/to/evaluate
@@ -89,6 +110,8 @@ Supported `--task` values in the current code are:
 - `alpaca`
 
 You can load data either from Hugging Face Hub with `--hf_dataset` or from a local file with `--data_files`.
+
+The multi-line examples in this section use Linux or macOS line continuation with `\`. On Windows PowerShell, either write each example on a single line or replace `\` with PowerShell's backtick line continuation.
 
 ### Example 1: GSM8K from Hugging Face
 
@@ -135,6 +158,8 @@ Important:
 
 Current code only exposes the `fedhera` aggregation path.
 
+The command blocks in this section are shown in Linux or macOS shell syntax. On Windows PowerShell, you can run the same arguments on one line or replace `\` with backticks.
+
 ### Smoke Test Example
 
 ```bash
@@ -177,7 +202,16 @@ Useful flags:
 
 To inspect all available arguments:
 
+Linux or macOS:
+
 ```bash
+python3 main.py --help
+python3 utils/preprocess_fedhera_data.py --help
+```
+
+Windows PowerShell:
+
+```powershell
 python main.py --help
 python utils/preprocess_fedhera_data.py --help
 ```

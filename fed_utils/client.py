@@ -1,5 +1,7 @@
 import transformers
 import os
+import importlib
+import sys
 from datasets import load_dataset
 import copy
 from collections import OrderedDict
@@ -9,7 +11,6 @@ from peft import (
 )
 from .adaptive_peft import tokenize
 import logging
-import evaluate
 import numpy as np
 import math
 import time
@@ -18,6 +19,40 @@ import gc
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 EVALUATE_ROOT = os.environ.get("FEDHERA_EVALUATE_ROOT", os.path.join(REPO_ROOT, "evaluate"))
+EVALUATE_SRC = os.path.join(EVALUATE_ROOT, "src")
+
+
+def _import_evaluate_module():
+    try:
+        import evaluate as evaluate_module
+    except Exception:
+        evaluate_module = None
+    else:
+        if hasattr(evaluate_module, "load"):
+            return evaluate_module
+
+    if os.path.isdir(EVALUATE_SRC) and EVALUATE_SRC not in sys.path:
+        sys.path.insert(0, EVALUATE_SRC)
+
+    sys.modules.pop("evaluate", None)
+    evaluate_module = importlib.import_module("evaluate")
+    if hasattr(evaluate_module, "load"):
+        return evaluate_module
+
+    module_origin = getattr(evaluate_module, "__file__", None)
+    if module_origin is None:
+        module_origin = ",".join(getattr(evaluate_module, "__path__", []))
+
+    raise ImportError(
+        "Imported 'evaluate' but it does not expose 'load'. "
+        f"Resolved module origin: {module_origin}. "
+        f"If you cloned huggingface/evaluate into '{EVALUATE_ROOT}', "
+        f"ensure '{EVALUATE_SRC}' exists or set FEDHERA_EVALUATE_ROOT correctly."
+    )
+
+
+evaluate = _import_evaluate_module()
+
 
 
 def _load_evaluate_metric(local_relative_path: str, fallback_name: str | None = None):

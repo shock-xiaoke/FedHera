@@ -66,7 +66,7 @@ def allocate_r_main_for_client(layers, r_tot, M_bytes, T_ms, c_mem_per_col, c_ti
         invT = 1.0 / current_T_ratio
         invM = 1.0 / current_M_ratio
 
-        # 【Fix 3: 修复括号优先级错误】
+        # [Fix 3: correct the parentheses precedence bug]
         sum_inv = invT + invM
         a = (invT / sum_inv) if alpha is None else alpha
         b = (invM / sum_inv) if beta  is None else beta

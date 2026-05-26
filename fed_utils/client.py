@@ -146,92 +146,93 @@ class GeneralClient:
 
     def compute_oracle_drift(self, global_params, oracle_r=4096, lora_alpha=16):
         """
-        计算当前训练好的 Low-Rank 更新与 High-Rank Oracle 更新之间的差距。
+        Compute the gap between the trained low-rank update and the high-rank Oracle update.
         Reference: || Delta_W_method - Delta_W_oracle ||_F / || Delta_W_oracle ||_F
         """
         logging.info(f"Client {self.client_id}: Computing Oracle Drift (r={oracle_r})...")
         
-        # 1. 缓存当前算法训练出的权重 (Method Weights)
-        # 我们需要将其转换为 Dense Delta: (BA * scale)
+        # 1. Cache the weights produced by the current method.
+        # We need to convert them into a dense delta: (BA * scale)
         method_deltas = {}
-        target_modules = set() # 记录哪些层被训练了
+        target_modules = set() # Record which layers were trained.
         
         with torch.no_grad():
             for name, param in self.model.named_parameters():
-                if "lora_A" in name and "default" not in name: # 假设当前 adapter 是 active 的
+                if "lora_A" in name and "default" not in name: # Assume the current adapter is active.
                     # name e.g., base_model.model.layers.0.self_attn.q_proj.lora_A.local.weight
                     base_key = ".".join(name.split(".")[:-3]) + ".lora"
                     target_modules.add(base_key)
                     
-                    # 找到对应的 B
+                    # Find the matching B matrix.
                     key_B = name.replace("lora_A", "lora_B")
                     param_B = self.model.get_parameter(key_B)
                     
-                    # 计算 Low-Rank Delta
+                    # Compute the low-rank delta.
                     # W_delta = B @ A * (alpha / r)
                     r = param.shape[0]
                     scale = lora_alpha / r
                     
                     # shape: B=[d_out, r], A=[r, d_in] -> [d_out, d_in]
                     delta = (param_B @ param) * scale
-                    method_deltas[base_key] = delta.detach().cpu()  # 移至 CPU 节省显存
+                    method_deltas[base_key] = delta.detach().cpu()  # Move to CPU to save VRAM.
 
-        # 2. 回滚模型到初始状态 (Global State)
-        # 注意：我们需要保存当前的 state_dict 以便最后恢复
+        # 2. Roll the model back to its initial state (global state).
+        # Save the current state_dict so it can be restored later.
         current_state_dict = {k: v.cpu() for k, v in self.model.state_dict().items()}
         
-        # 加载初始全局参数 (这会重置 LoRA 参数为本轮初始状态，或者对于 Oracle 来说，它是基座)
-        # 实际上，我们需要一个新的干净的 Adapter。
-        # 最简单的方法：Unload 当前 Adapter -> 加载新 Adapter -> Train -> Unload -> Reload 旧 Adapter
+        # Load the initial global parameters.
+        # This resets the LoRA parameters to the round's initial state; for the Oracle, it acts as the base.
+        # In practice we need a fresh, clean adapter.
+        # The simplest path is: unload current adapter -> load new adapter -> train -> unload -> reload old adapter.
         
-        # 3. 切换到 Oracle Adapter
+        # 3. Switch to the Oracle adapter.
         from peft import LoraConfig, get_peft_model
         
-        # 卸载当前 adapter (逻辑上屏蔽即可，PEFT 支持多 adapter)
+        # Disable the current adapter logically; PEFT supports multiple adapters.
         adapter_name = "oracle_adapter"
         
-        # 提取 target_modules 的简写名 (e.g. q_proj, v_proj) 用于 Config
-        # 这是一个简化处理，假设所有层结构一致
+        # Extract the short target module names (for example q_proj and v_proj) for the config.
+        # This is a simplified approach that assumes all layers share the same structure.
         target_module_names = list(set([k.split(".")[-2] for k in method_deltas.keys()]))
         
         oracle_config = LoraConfig(
             r=oracle_r,
-            lora_alpha=lora_alpha, # Alpha 通常设为 r 或 16，保持一致性即可，这里建议 alpha=r 以便 scale=1，或者保持 16
+            lora_alpha=lora_alpha, # Alpha is usually set to r or 16; alpha=r makes scale=1, but 16 is also fine.
             target_modules=target_module_names,
             lora_dropout=0.0,
             bias="none",
             task_type="CAUSAL_LM",
         )
         
-        # 添加新的 Adapter
+        # Add the new adapter.
         self.model.add_adapter(adapter_name, oracle_config)
         self.model.set_adapter(adapter_name)
         
-        # 确保 Oracle 是可训练的
+        # Ensure the Oracle adapter is trainable.
         for n, p in self.model.named_parameters():
             if adapter_name in n:
                 p.requires_grad = True
             else:
                 p.requires_grad = False
                 
-        # 4. 训练 Oracle
-        # 重建 Trainer，因为参数变了
-        # 为了速度，Oracle 可以训练较少的 step，但为了公平，应该保持 epoch 一致
-        # 这里复用 build_local_trainer 的参数，但需要重新初始化 optimizer
+        # 4. Train the Oracle adapter.
+        # Rebuild the Trainer because the trainable parameters changed.
+        # The Oracle could use fewer steps for speed, but keeping the same epoch count is fairer.
+        # Reuse the build_local_trainer arguments, but reinitialize the optimizer.
         self.build_local_trainer(
             self.tokenizer,
             self.train_args.per_device_train_batch_size,
             self.train_args.gradient_accumulation_steps,
-            self.train_args.num_train_epochs, # 保持 epoch 一致
+            self.train_args.num_train_epochs, # Keep the epoch count unchanged.
             self.train_args.learning_rate,
             self.train_args.group_by_length,
             self.train_args.warmup_steps
         )
         
-        # 开始训练 Oracle
+        # Train the Oracle adapter.
         self.local_trainer.train()
         
-        # 5. 计算 Oracle Delta 并 计算距离
+        # 5. Compute the Oracle delta and the resulting distance.
         total_drift = 0.0
         total_oracle_norm = 0.0
         
@@ -255,7 +256,7 @@ class GeneralClient:
                     
                     delta_method = method_deltas[base_key]
                     
-                    # 计算 Frobenius Norm
+                    # Compute the Frobenius norms.
                     # Diff
                     diff = torch.norm(delta_method - delta_oracle, p='fro') ** 2
                     # Oracle Norm
@@ -264,23 +265,23 @@ class GeneralClient:
                     total_drift += diff.item()
                     total_oracle_norm += oracle_norm.item()
         
-        # 最终指标
+        # Final metrics.
         relative_drift = math.sqrt(total_drift) / (math.sqrt(total_oracle_norm) + 1e-9)
         absolute_drift = math.sqrt(total_drift)
         
-        # 6. 清理现场
-        # 删除 Oracle adapter
+        # 6. Clean up.
+        # Delete the Oracle adapter.
         self.model.delete_adapter(adapter_name)
         
-        # 恢复原来的 Weights (重新加载之前的 state_dict)
-        # 注意：self.model.load_state_dict(current_state_dict) 可能会有 strict 问题
-        # 更安全的方式是切回 'local' (或 'default') adapter 并把参数赋回去
+        # Restore the original weights by reloading the previous state_dict.
+        # Note: self.model.load_state_dict(current_state_dict) may run into strict-loading issues.
+        # A safer option is to switch back to the 'local' (or 'default') adapter and copy the parameters back.
         self.model.set_adapter("local") 
-        # 将参数从 cpu 拷回 gpu
-        # 实际上 PEFT 的 delete_adapter 应该已经切回去了，但为了保险，我们要恢复之前训练好的值
+        # Copy the parameters from CPU back to GPU.
+        # PEFT should already switch back after delete_adapter, but we restore the trained values explicitly for safety.
         keys = self.model.load_state_dict(current_state_dict, strict=False)
         
-        # 释放内存
+        # Release memory.
         del method_deltas
         del current_state_dict
         torch.cuda.empty_cache()
@@ -384,26 +385,26 @@ class GeneralClient:
         
         def preprocess_logits_for_metrics(logits, labels):
             """
-            在缓存 logits 之前先做 argmax，极大幅度节省显存。
-            Llama-3 vocab=128k, float16 -> argmax int64 节省约 25万倍显存
+            Apply argmax before caching logits to reduce memory usage dramatically.
+            For Llama-3 with a 128k vocabulary in float16, argmax int64 reduces memory by roughly 250,000x.
             """
             if isinstance(logits, tuple):
-                # 模型可能返回 (logits, past_key_values)
+                # The model may return (logits, past_key_values).
                 logits = logits[0]
-            # 直接返回预测的 token ID，抛弃庞大的概率分布
+            # Return predicted token IDs directly and discard the large probability distribution.
             return logits.argmax(dim=-1)
 
         def compute_metrics(pred):
             pred_ids = pred.predictions  
             labels_ids = pred.label_ids
 
-            # Shift 操作 (Causal LM 的标准操作)
+            # Standard shift operation for causal language models.
             shift_preds = pred_ids[:, :-1]
             shift_labels = labels_ids[:, 1:]
 
             mask = (shift_labels != -100)
             
-            # 计算准确率
+            # Compute accuracy.
             matches = (shift_preds == shift_labels) & mask
             correct = matches.sum()
             total_valid_tokens = mask.sum()
@@ -582,12 +583,12 @@ class GeneralClient:
             shift_labels = labels_ids[:, 1:]
 
             # ---------------------------------------------------------------------
-            # 3. 计算 Token-level Accuracy (替换了原先严苛的 String Accuracy)
+            # 3. Compute token-level accuracy instead of the stricter string accuracy.
             # ---------------------------------------------------------------------
-            # 创建掩码：忽略 padding 和 label 为 -100 的部分
+            # Build a mask that ignores padding and labels equal to -100.
             mask = (shift_labels != -100)
 
-            # 只有在 mask 为 True 的位置才计算是否相等
+            # Only compare positions where the mask is True.
             matches = (shift_preds == shift_labels) & mask
             correct = matches.sum()
             total_valid_tokens = max(1, mask.sum())
@@ -595,16 +596,16 @@ class GeneralClient:
             token_accuracy = correct / total_valid_tokens
 
             # ---------------------------------------------------------------------
-            # 4. 保留 ROUGE 计算 (优化：使用移位后的数据解码，确保文本对齐)
+            # 4. Keep the ROUGE computation, but decode shifted data so the texts stay aligned.
             # ---------------------------------------------------------------------
-            # 准备解码用的 Pad ID
+            # Prepare the pad token ID used for decoding.
             pad_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
             
-            # 处理标签中的 -100，将其替换为 pad_id 以便 tokenizer 解码
-            # 注意：这里我们使用 shift_labels，这样解码出来的文本和预测文本在语义上是对齐的
+            # Replace -100 in the labels with pad_id so the tokenizer can decode them.
+            # We use shift_labels here so the decoded labels and predictions are aligned semantically.
             clean_labels = np.where(shift_labels == -100, pad_id, shift_labels)
 
-            # 解码为字符串
+            # Decode to strings.
             pred_str = self.tokenizer.batch_decode(shift_preds, skip_special_tokens=True)
             label_str = self.tokenizer.batch_decode(clean_labels, skip_special_tokens=True)
 
@@ -619,7 +620,7 @@ class GeneralClient:
                 cider_score, _ = cider_scorer.compute_score(gts, res)
 
             # ---------------------------------------------------------------------
-            # 5. 返回合并后的指标
+            # 5. Return the merged metrics.
             # ---------------------------------------------------------------------
             metrics = {
                 "accuracy": round(float(token_accuracy), 4),
